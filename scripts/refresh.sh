@@ -55,6 +55,7 @@ IPA_PATH="$APP_DIR/app.ipa"
 APP_STATE="$APP_DIR/state/$DEVICE"
 TAG="[${APP_NAME:-$APP} on $DEVICE_NAME] "
 EXPIRY="$APP_STATE/expiry"
+CERT="$APP_STATE/certificate"
 FAILS="$APP_STATE/consecutive_failures"
 LOG_FILE="$STATE_DIR/refresh.log"
 NOISE='^(Signing|Installation) Progress:|^Writing File: |^Signing: |^(Data|Value) ?: |^X-(Apple|Mme|MMe)-|^(MachineID|One-Time Password|Local User ID|Device UDID|Device Description|Date|Sanitized client info) ?:|^Byte:|^(HMAC_OUT|NP):|anisette|^Received (auth )?response status code'
@@ -62,6 +63,9 @@ NOISE='^(Signing|Installation) Progress:|^Writing File: |^Signing: |^(Data|Value
 export ALTSERVER_ANISETTE_SERVER="$ANISETTE_SERVER"
 export HOME="$DATA_DIR/.altserver"
 mkdir -p "$STATE_DIR" "$APP_STATE" "$HOME"
+# AltServer caches its signing certificate in ./AltServerData. Without that cache it revokes the
+# certificate and makes a new one, and iOS then asks to trust the developer again.
+cd "$DATA_DIR"
 
 now() { date +%s; }
 fmt_epoch() { date -d "@$1" '+%a %d %b %H:%M'; }
@@ -97,7 +101,7 @@ probe_expiry() {
   tmp="$(mktemp -d)"
   if timeout 90 ideviceprovision ${f:+"$f"} -u "$DEVICE_UDID" copy "$tmp" >/dev/null 2>&1; then
     python3 - "$tmp" "$BUNDLE_ID" "${1:-0}" <<'PY' && rc=0 || rc=$?
-import datetime, glob, plistlib, subprocess, sys
+import datetime, glob, hashlib, plistlib, subprocess, sys
 folder, bundle, min_created = sys.argv[1], sys.argv[2], int(sys.argv[3])
 utc = lambda d: d.replace(tzinfo=datetime.timezone.utc).timestamp()
 best = None
@@ -111,23 +115,37 @@ for p in glob.glob(folder + "/*.mobileprovision"):
     if bundle and bundle not in d.get("Entitlements", {}).get("application-identifier", ""):
         continue
     c, e = d.get("CreationDate"), d.get("ExpirationDate")
+    certs = d.get("DeveloperCertificates") or [b""]
     if c and e and (best is None or c > best[0]):
-        best = (c, int(utc(e)))
+        best = (c, int(utc(e)), hashlib.sha1(certs[0]).hexdigest())
 if best is None:
     sys.exit(1)
 if utc(best[0]) < min_created:
     sys.exit(2)
-print(best[1])
+print(best[1], best[2])
 PY
   fi
   rm -rf "$tmp"
   return $rc
 }
 
-stamp_success() {
-  local e
-  e="$(probe_expiry $(( RUN_START - 300 )))" || return 1
+save_probe() {
+  local e c old=""
+  read -r e c <<< "$1"
   echo "$e" > "$EXPIRY"
+  [[ -r "$CERT" ]] && old="$(cat "$CERT")"
+  echo "$c" > "$CERT"
+  if [[ -n "$old" && "$old" != "$c" ]]; then
+    log "WARNING the signing certificate changed, so iOS will ask you to trust the developer again" \
+        "(Settings > General > VPN & Device Management). It changes when $APPLE_ID is also used by" \
+        "Xcode, AltStore, SideStore or Sideloadly, or when $DATA_DIR/AltServerData is lost."
+  fi
+}
+
+stamp_success() {
+  local p
+  p="$(probe_expiry $(( RUN_START - 300 )))" || return 1
+  save_probe "$p"
   echo 0 > "$FAILS"
 }
 
@@ -136,9 +154,9 @@ read_fails() { local n=0; [[ -r "$FAILS" ]] && n="$(tr -cd '0-9' < "$FAILS")"; e
 
 if (( RECHECK )); then
   device_online || { echo "${TAG}${DEVICE_NAME} not reachable; unlock it and try again"; exit 1; }
-  e="$(probe_expiry)" || { rm -f "$EXPIRY"; log "not installed on this device"; exit 0; }
-  echo "$e" > "$EXPIRY"
-  log "rechecked on the device: signature valid until $(fmt_epoch "$e")"
+  p="$(probe_expiry)" || { rm -f "$EXPIRY"; log "not installed on this device"; exit 0; }
+  save_probe "$p"
+  log "rechecked on the device: signature valid until $(fmt_epoch "$(cat "$EXPIRY")")"
   exit 0
 fi
 
