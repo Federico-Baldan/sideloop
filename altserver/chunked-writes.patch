@@ -1,0 +1,58 @@
+diff --git a/upstream_repo/AltServer/DeviceManager.cpp b/upstream_repo/AltServer/DeviceManager.cpp
+index 3d6e7dc..fa687d7 100755
+--- a/upstream_repo/AltServer/DeviceManager.cpp
++++ b/upstream_repo/AltServer/DeviceManager.cpp
+@@ -539,7 +539,14 @@ void DeviceManager::WriteFile(afc_client_t client, std::string filepath, std::st
+ 
+ 	odslog("Writing File: " << filepath.c_str() << " to: " << destinationPath.c_str());
+     
+-    auto data = readFile(filepath.c_str());
++    // sideloop: stream the file in 1 MB chunks. readFile copies byte by byte, which takes long
++    // enough for a large binary (Spotify is 175 MB) that the device drops the idle connection,
++    // and afc_file_write sends its whole buffer as one packet that times out over Wi-Fi.
++    std::ifstream file(filepath, std::ios::binary);
++    if (!file)
++    {
++        throw ServerError(ServerErrorCode::DeviceWriteFailed);
++    }
+     
+     uint64_t af = 0;
+     if ((afc_file_open(client, destinationPath.c_str(), AFC_FOPEN_WRONLY, &af) != AFC_E_SUCCESS) || af == 0)
+@@ -547,23 +554,24 @@ void DeviceManager::WriteFile(afc_client_t client, std::string filepath, std::st
+         throw ServerError(ServerErrorCode::DeviceWriteFailed);
+     }
+     
+-    uint32_t bytesWritten = 0;
+-    
+-    while (bytesWritten < data.size())
++    std::vector<char> buffer(1024 * 1024);
++    while (file.read(buffer.data(), buffer.size()) || file.gcount() > 0)
+     {
+-        uint32_t count = 0;
++        uint32_t length = (uint32_t)file.gcount();
++        uint32_t bytesWritten = 0;
+         
+-        if (afc_file_write(client, af, (const char *)data.data() + bytesWritten, (uint32_t)data.size() - bytesWritten, &count) != AFC_E_SUCCESS)
++        while (bytesWritten < length)
+         {
+-            throw ServerError(ServerErrorCode::DeviceWriteFailed);
++            uint32_t count = 0;
++            
++            if (afc_file_write(client, af, buffer.data() + bytesWritten, length - bytesWritten, &count) != AFC_E_SUCCESS || count == 0)
++            {
++                afc_file_close(client, af);
++                throw ServerError(ServerErrorCode::DeviceWriteFailed);
++            }
++            
++            bytesWritten += count;
+         }
+-        
+-        bytesWritten += count;
+-    }
+-    
+-    if (bytesWritten != data.size())
+-    {
+-        throw ServerError(ServerErrorCode::DeviceWriteFailed);
+     }
+     
+     afc_file_close(client, af);

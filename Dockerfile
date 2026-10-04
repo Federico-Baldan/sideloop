@@ -1,16 +1,17 @@
 ARG ALTSERVER_TAG=ng-2026-09-13
 
-# AltServer is built from source with altserver/keep-profiles.patch. Stock AltServer removes every
+# AltServer is built from source with the patches in altserver/. Stock AltServer removes every
 # free provisioning profile on the device before installing, which makes iOS forget that the user
-# trusted the developer, so each refresh brought back "Untrusted Developer".
+# trusted the developer, so each refresh brought back "Untrusted Developer". It also loads each file
+# byte by byte and sends it as one packet, so large app binaries time out over Wi-Fi.
 FROM ghcr.io/nyamisty/altserver_builder_alpine_aarch64 AS altserver-arm64
 FROM ghcr.io/nyamisty/altserver_builder_alpine_amd64 AS altserver-amd64
 FROM altserver-${TARGETARCH} AS altserver
 ARG ALTSERVER_TAG
-COPY altserver/keep-profiles.patch /tmp/
+COPY altserver/*.patch /tmp/patches/
 RUN git clone -q --recursive --depth 1 --shallow-submodules -b "$ALTSERVER_TAG" \
       https://github.com/jaakkopalvaila/AltServer-Linux /src \
- && cd /src && git apply /tmp/keep-profiles.patch \
+ && cd /src && git apply /tmp/patches/*.patch \
  && mkdir build && cd build && make -f ../Makefile -j"$(nproc)" \
  && cp AltServer-* /AltServer
 
