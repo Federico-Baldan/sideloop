@@ -61,6 +61,11 @@ LOG_FILE="$STATE_DIR/refresh.log"
 NOISE='^(Signing|Installation) Progress:|^Writing File: |^Signing: |^(Data|Value) ?: |^X-(Apple|Mme|MMe)-|^(MachineID|One-Time Password|Local User ID|Device UDID|Device Description|Date|Sanitized client info) ?:|^Byte:|^(HMAC_OUT|NP):|anisette|^Received (auth )?response status code'
 
 export ALTSERVER_ANISETTE_SERVER="$ANISETTE_SERVER"
+# Stock AltServer removes every free provisioning profile on the device before installing. Once the
+# last profile of a developer is gone iOS forgets that the user trusted it, so every refresh brought
+# back "Untrusted Developer". The patched AltServer leaves them in place, and prune_profiles below
+# removes the outdated ones afterwards, never the newest.
+export ALTSERVER_KEEP_PROFILES=1
 export HOME="$DATA_DIR/.altserver"
 mkdir -p "$STATE_DIR" "$APP_STATE" "$HOME"
 # AltServer caches its signing certificate in ./AltServerData. Without that cache it revokes the
@@ -172,6 +177,44 @@ heal_siblings() {
   rm -rf "$tmp"
 }
 
+# Removes provisioning profiles of this Apple ID's team that a newer profile for the same app or
+# extension replaced, on every app of the team. The newest one always stays, so the developer remains trusted.
+prune_profiles() {
+  local f tmp u
+  f="$(conn_flag)" || return 0
+  tmp="$(copy_profiles)" || return 0
+  python3 - "$tmp" "$BUNDLE_ID" <<'PY' | while read -r u; do
+import glob, plistlib, re, subprocess, sys
+folder, bundle = sys.argv[1], sys.argv[2]
+profiles = []
+for p in glob.glob(folder + "/*.mobileprovision"):
+    xml = subprocess.run(["openssl", "smime", "-verify", "-noverify", "-inform", "DER", "-in", p],
+                         capture_output=True).stdout
+    try:
+        d = plistlib.loads(xml)
+    except Exception:
+        continue
+    profiles.append((d.get("Entitlements", {}).get("application-identifier", ""), d["CreationDate"], d["UUID"]))
+main = re.compile(r"^(\w+)\." + re.escape(bundle) + r"\.\1$")
+# The app was just installed, so its newest profile belongs to this Apple ID's team. Profiles of
+# other teams (SideStore, Xcode) are left alone.
+ours = max(((c, a) for a, c, _ in profiles if main.match(a)), default=None)
+if ours is None:
+    sys.exit()
+team = ours[1].split(".", 1)[0]
+newest = {}
+for a, c, u in profiles:
+    if a.split(".", 1)[0] == team and (a not in newest or c > newest[a][0]):
+        newest[a] = (c, u)
+for a, c, u in profiles:
+    if a in newest and newest[a][1] != u:
+        print(u)
+PY
+    timeout 30 ideviceprovision ${f:+"$f"} -u "$DEVICE_UDID" remove "$u" </dev/null >/dev/null 2>&1 || true
+  done
+  rm -rf "$tmp"
+}
+
 save_probe() {
   local e c old=""
   read -r e c <<< "$1"
@@ -238,6 +281,7 @@ set -e
 if (( rc == 0 )) && stamp_success; then
   msg="refreshed, valid until $(fmt_epoch "$(cat "$EXPIRY")")"
   log "OK $msg"; record ok "$msg"
+  prune_profiles
   heal_siblings
   exit 0
 fi

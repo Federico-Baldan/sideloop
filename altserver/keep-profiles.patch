@@ -1,0 +1,15 @@
+diff --git a/upstream_repo/AltServer/DeviceManager.cpp b/upstream_repo/AltServer/DeviceManager.cpp
+index a3aa6e8..3d6e7dc 100755
+--- a/upstream_repo/AltServer/DeviceManager.cpp
++++ b/upstream_repo/AltServer/DeviceManager.cpp
+@@ -383,7 +383,9 @@ pplx::task<void> DeviceManager::InstallApp(std::string appFilepath, std::string
+ 			}
+ 
+ 			/* Provisioning Profiles */			
+-			bool shouldManageProfiles = (activeProfiles.has_value() || (application->provisioningProfile() != NULL && application->provisioningProfile()->isFreeProvisioningProfile()));
++			// sideloop: removing every free profile before installing makes iOS forget that the user
++			// trusted the developer, so ALTSERVER_KEEP_PROFILES leaves them in place.
++			bool shouldManageProfiles = getenv("ALTSERVER_KEEP_PROFILES") == NULL && (activeProfiles.has_value() || (application->provisioningProfile() != NULL && application->provisioningProfile()->isFreeProvisioningProfile()));
+ 			if (shouldManageProfiles)
+ 			{				
+ 				// Free developer account was used to sign this app, so we need to remove all

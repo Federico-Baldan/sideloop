@@ -1,6 +1,21 @@
+ARG ALTSERVER_TAG=ng-2026-09-13
+
+# AltServer is built from source with altserver/keep-profiles.patch. Stock AltServer removes every
+# free provisioning profile on the device before installing, which makes iOS forget that the user
+# trusted the developer, so each refresh brought back "Untrusted Developer".
+FROM ghcr.io/nyamisty/altserver_builder_alpine_aarch64 AS altserver-arm64
+FROM ghcr.io/nyamisty/altserver_builder_alpine_amd64 AS altserver-amd64
+FROM altserver-${TARGETARCH} AS altserver
+ARG ALTSERVER_TAG
+COPY altserver/keep-profiles.patch /tmp/
+RUN git clone -q --recursive --depth 1 --shallow-submodules -b "$ALTSERVER_TAG" \
+      https://github.com/jaakkopalvaila/AltServer-Linux /src \
+ && cd /src && git apply /tmp/keep-profiles.patch \
+ && mkdir build && cd build && make -f ../Makefile -j"$(nproc)" \
+ && cp AltServer-* /AltServer
+
 FROM debian:trixie-slim
 
-ARG ALTSERVER_TAG=ng-2026-09-13
 ARG NETMUXD_TAG=v0.4.3
 
 RUN apt-get update \
@@ -10,12 +25,11 @@ RUN apt-get update \
 
 RUN arch="$(uname -m)" \
  && case "$arch" in aarch64|arm64) arch=aarch64 ;; x86_64) ;; *) echo "unsupported arch $arch"; exit 1 ;; esac \
- && curl -fsSL -o /usr/local/bin/AltServer \
-      "https://github.com/jaakkopalvaila/AltServer-Linux/releases/download/${ALTSERVER_TAG}/AltServer-${arch}" \
  && curl -fsSL "https://github.com/jkcoxson/netmuxd/releases/download/${NETMUXD_TAG}/netmuxd-${arch}-unknown-linux-gnu.tar.gz" \
       | tar xz -C /usr/local/bin \
- && chmod +x /usr/local/bin/AltServer /usr/local/bin/netmuxd
+ && chmod +x /usr/local/bin/netmuxd
 
+COPY --from=altserver /AltServer /usr/local/bin/AltServer
 COPY scripts/ /usr/local/bin/
 COPY sideloop/ /opt/sideloop/
 
