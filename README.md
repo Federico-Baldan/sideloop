@@ -40,6 +40,14 @@ cp .env.example .env
 docker compose up -d
 ```
 
+The first build compiles AltServer, which takes a few minutes. On a small board like a Raspberry Pi 3 it is much faster to build on another arm64 machine and copy the image over:
+
+```bash
+docker build --platform linux/arm64 -t sideloop .
+docker save sideloop | gzip | ssh pi@<host> 'gunzip | docker load'
+ssh pi@<host> 'cd sideloop && docker compose up -d --no-build'
+```
+
 Open `http://<host>:8080` and set a password. Then pair a device over USB, add an IPA and enter your Apple ID.
 
 Run on macOS
@@ -59,7 +67,8 @@ Pair the device in Finder and enable **Show this iPhone when on Wi-Fi**.
 - Apple asks for a **2FA code** on the first sign-in. After that, sign-ins are silent.
 - The device must be **unlocked and on the same Wi-Fi** while a re-sign runs.
 - A free account allows 3 apps per device and 10 App IDs per week. Each app extension needs its own App ID.
-- If Apple sign-in stops working, update `ALTSERVER_TAG` in the `Dockerfile`.
+- Trust the developer once in **Settings > General > VPN & Device Management**. Refreshes keep it trusted.
+- If Apple sign-in stops working, update `ALTSERVER_TAG` in the `Dockerfile`. AltServer is built from that tag with the patches in `altserver/`.
 
 Data is stored in `./data`.
 
