@@ -95,15 +95,26 @@ device_online() {
   timeout 15 ideviceinfo ${f:+"$f"} -u "$DEVICE_UDID" -k DeviceName >/dev/null 2>&1
 }
 
-probe_expiry() {
-  local f tmp rc=1
+# Copies the device's provisioning profiles into a new temporary folder and prints its path.
+copy_profiles() {
+  local f tmp
   f="$(conn_flag)" || return 1
   tmp="$(mktemp -d)"
-  if timeout 90 ideviceprovision ${f:+"$f"} -u "$DEVICE_UDID" copy "$tmp" >/dev/null 2>&1; then
-    python3 - "$tmp" "$BUNDLE_ID" "${1:-0}" <<'PY' && rc=0 || rc=$?
-import datetime, glob, hashlib, plistlib, subprocess, sys
-folder, bundle, min_created = sys.argv[1], sys.argv[2], int(sys.argv[3])
+  if ! timeout 90 ideviceprovision ${f:+"$f"} -u "$DEVICE_UDID" copy "$tmp" >/dev/null 2>&1; then
+    rm -rf "$tmp"; return 1
+  fi
+  echo "$tmp"
+}
+
+# Prints "<expiry> <certificate sha1>" of the newest profile in a folder for the main app of a
+# bundle. Exits 1 when there is none, 2 when it is older than min_created. With a certificate
+# sha1, profiles signed by another certificate (e.g. SideStore with another Apple ID) are skipped.
+read_profile() {
+  python3 - "$1" "$2" "${3:-0}" "${4:-}" <<'PY'
+import datetime, glob, hashlib, plistlib, re, subprocess, sys
+folder, bundle, min_created, cert = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
 utc = lambda d: d.replace(tzinfo=datetime.timezone.utc).timestamp()
+main_app = re.compile(r"^(\w+)\." + re.escape(bundle) + r"\.\1$")
 best = None
 for p in glob.glob(folder + "/*.mobileprovision"):
     xml = subprocess.run(["openssl", "smime", "-verify", "-noverify", "-inform", "DER", "-in", p],
@@ -112,21 +123,53 @@ for p in glob.glob(folder + "/*.mobileprovision"):
         d = plistlib.loads(xml)
     except Exception:
         continue
-    if bundle and bundle not in d.get("Entitlements", {}).get("application-identifier", ""):
+    if bundle and not main_app.match(d.get("Entitlements", {}).get("application-identifier", "")):
         continue
     c, e = d.get("CreationDate"), d.get("ExpirationDate")
-    certs = d.get("DeveloperCertificates") or [b""]
+    certs = [hashlib.sha1(x).hexdigest() for x in d.get("DeveloperCertificates") or [b""]]
+    if cert and cert not in certs:
+        continue
     if c and e and (best is None or c > best[0]):
-        best = (c, int(utc(e)), hashlib.sha1(certs[0]).hexdigest())
+        best = (c, int(utc(e)), certs[0])
 if best is None:
     sys.exit(1)
 if utc(best[0]) < min_created:
     sys.exit(2)
 print(best[1], best[2])
 PY
-  fi
+}
+
+probe_expiry() {
+  local tmp rc=0
+  tmp="$(copy_profiles)" || return 1
+  read_profile "$tmp" "$BUNDLE_ID" "${1:-0}" || rc=$?
   rm -rf "$tmp"
   return $rc
+}
+
+# AltServer removes the provisioning profiles of every sideloaded app on the device before it
+# installs, and puts the others back only when the install succeeds. A run that fails or times
+# out halfway leaves those apps without a profile, so iOS refuses to open them with "Untrusted
+# Developer" even though their signature looks valid here. Check the other apps on the device
+# after every run, and forget the signature of any that lost its profile so it gets reinstalled.
+heal_siblings() {
+  local tmp d s p name bundle cert
+  tmp="$(copy_profiles)" || return 0
+  for d in "$APPS_DIR"/*/; do
+    s="$d/state/$DEVICE"
+    [[ "$(basename "$d")" != "$APP" && -r "$s/expiry" && -r "$d/meta.env" ]] || continue
+    IFS=$'\t' read -r bundle name < <(set -a; . "$d/meta.env"; printf '%s\t%s\n' "${BUNDLE_ID:-}" "${APP_NAME:-}")
+    [[ -n "$bundle" ]] || continue
+    cert=""; [[ -r "$s/certificate" ]] && cert="$(cat "$s/certificate")"
+    if p="$(read_profile "$tmp" "$bundle" 0 "$cert")"; then
+      echo "${p%% *}" > "$s/expiry"
+    else
+      rm -f "$s/expiry"
+      log "WARNING ${name:-$bundle} lost its provisioning profile during this run and won't open;" \
+          "it will be reinstalled on the next run"
+    fi
+  done
+  rm -rf "$tmp"
 }
 
 save_probe() {
@@ -195,6 +238,7 @@ set -e
 if (( rc == 0 )) && stamp_success; then
   msg="refreshed, valid until $(fmt_epoch "$(cat "$EXPIRY")")"
   log "OK $msg"; record ok "$msg"
+  heal_siblings
   exit 0
 fi
 
@@ -210,4 +254,5 @@ fi
 n=$(( $(read_fails) + 1 )); echo "$n" > "$FAILS"
 log "FAIL AltServer exited $rc (consecutive failures: $n)${hint:+ - $hint}"
 record fail "AltServer exited $rc${hint:+: $hint}"
+heal_siblings
 exit "$rc"
