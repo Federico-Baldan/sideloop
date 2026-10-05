@@ -18,6 +18,12 @@ A small self-hosted service with a web UI for any Linux machine (amd64 or arm64)
 - [x] Self-hosted Apple sign-in via [anisette-v3-server](https://github.com/Dadoum/anisette-v3-server)
 - [x] Python standard library only, one Docker image for amd64 and arm64
 
+## Demo
+
+[![Watch the demo](.github/demo.jpg)](.github/demo.mp4)
+
+A two-minute narrated walkthrough: setup, adding devices and apps, the first install with a 2FA code, and automatic re-signing.
+
 ## Screenshots
 
 | Login | Apps | Signing | Settings | Activity |
