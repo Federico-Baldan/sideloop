@@ -20,7 +20,7 @@ A small self-hosted service with a web UI for any Linux machine (amd64 or arm64)
 
 ## Demo
 
-[![Watch the demo](.github/demo.jpg)](.github/demo.mp4)
+https://github.com/user-attachments/assets/8c6b799d-b9e7-4a15-898d-d96a2af8e876
 
 A two-minute narrated walkthrough: setup, adding devices and apps, the first install with a 2FA code, and automatic re-signing.
 
