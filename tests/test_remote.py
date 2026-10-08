@@ -204,11 +204,11 @@ class RunDevices(unittest.TestCase):
                 return real_run(argv, *args, **kwargs)
             routes.append(argv)
             return mock.Mock(returncode=0)
-        with mock.patch.object(remote, "WG_SUBNET", "10.8.0.0/24"), mock.patch.object(remote, "WG_GATEWAY", "172.20.0.100"), \
+        with mock.patch.object(remote, "WG_SUBNET", "10.8.0.0/24"), mock.patch.object(remote, "WG_GATEWAY", "172.18.0.2"), \
                 mock.patch.object(subprocess, "run", side_effect=run):
             self.run_devices([PHONE])
             self.run_devices([PHONE], local=True)
-        self.assertEqual(routes, [["ip", "route", "replace", "10.8.0.0/24", "via", "172.20.0.100"]])
+        self.assertEqual(routes, [["ip", "route", "replace", "10.8.0.0/24", "via", "172.18.0.2"]])
 
     def test_cancel_stops_loop(self):
         def cancelling(job, argv, env):
