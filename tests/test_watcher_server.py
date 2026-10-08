@@ -45,6 +45,13 @@ class WatcherDue(unittest.TestCase):
         self.assertFalse(self.w.due(B))
         self.assertTrue(self.w.due())
 
+    def test_due_matches_refresh_sh_whole_days(self):
+        # refresh.sh refreshes when the whole days left are at most RENEW_BEFORE_DAYS (2 by default).
+        for days_left, due in ((3.5, False), (2.99, True), (2.5, True), (0.5, True), (-1, True)):
+            with self.subTest(days_left=days_left):
+                (APPS / "two" / "state" / B / "expiry").write_text(str(int(time.time() + days_left * 86400)))
+                self.assertEqual(self.w.due(B), due)
+
     def test_timer_pass_only_targets_due_devices(self):
         self.assertEqual(self.w.targets(True, []), [A])
 

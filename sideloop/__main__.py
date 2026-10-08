@@ -19,7 +19,7 @@ def main():
 
     log(f"sideloop ({MUX} mux) on :{PORT}, data in {DATA}")
     if muxers:
-        remote.add_route()
+        remote.add_route(verbose=True)
         muxers.start()
     threading.Thread(target=health.loop, daemon=True).start()
     threading.Thread(target=watcher.loop, daemon=True).start()

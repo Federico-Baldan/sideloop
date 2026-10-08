@@ -9,9 +9,8 @@ from .config import TUNNEL_MUX, WG_GATEWAY, WG_SUBNET
 from .lockdown import LOCKDOWN_PORT, mux_connect, mux_request, mux_send
 from .log import log
 
-# Reaches a device that is away from home through a WireGuard tunnel. Bonjour doesn't cross the
-# tunnel, so the device is handed to a second netmuxd by its tunnel IP for the length of one run.
-# That netmuxd runs without heartbeat, so nothing talks to the phone outside a run.
+# Bonjour doesn't cross a VPN, so a device away from home is handed to a second netmuxd by its
+# WireGuard IP for the length of one run.
 PROBE_TIMEOUT = 3
 SERVICE_NAME = "_apple-mobdev2._tcp.local"
 
@@ -20,13 +19,15 @@ class TunnelError(Exception):
     pass
 
 
-def add_route():
+def add_route(verbose=False):
     if not (WG_SUBNET and WG_GATEWAY):
+        if verbose and (WG_SUBNET or WG_GATEWAY):
+            log("set both WG_SUBNET and WG_GATEWAY to route to the WireGuard subnet")
         return
     r = subprocess.run(["ip", "route", "replace", WG_SUBNET, "via", WG_GATEWAY], capture_output=True, text=True)
     if r.returncode:
         log(f"couldn't route {WG_SUBNET} via {WG_GATEWAY}: {r.stderr.strip() or r.returncode}")
-    else:
+    elif verbose:
         log(f"routing {WG_SUBNET} via {WG_GATEWAY} to reach devices away from home")
 
 
@@ -35,9 +36,12 @@ def valid_ip(text):
     if not text:
         return ""
     try:
-        return str(ipaddress.ip_address(text))
+        ip = ipaddress.ip_address(text)
     except ValueError:
-        raise ValueError("enter the device's WireGuard IP, like 10.8.0.2") from None
+        ip = None
+    if ip is None or getattr(ip, "scope_id", None):
+        raise ValueError("enter the device's WireGuard IP, like 10.8.0.2")
+    return str(ip)
 
 
 def reachable(ip, port=LOCKDOWN_PORT):
@@ -59,17 +63,16 @@ def _remove(udid, mux):
 
 @contextmanager
 def session(udid, ip, mux=None):
-    """Lists the device on the tunnel muxer at ip while the block runs and yields the environment
-    that points libimobiledevice and AltServer at that muxer."""
     mux = mux or TUNNEL_MUX
     _remove(udid, mux)
     try:
         with mux_connect(mux) as s:
             r = mux_request(s, {"MessageType": "AddDevice", "ConnectionType": "Network",
                                 "ServiceName": SERVICE_NAME, "IPAddress": ip, "DeviceID": udid})
-    except OSError as e:
+        ok = r.get("Result") == 1
+    except Exception as e:
         raise TunnelError(f"the tunnel muxer didn't take {store.device_name(udid)} ({e}); is it paired?") from None
-    if r.get("Result") != 1:
+    if not ok:
         raise TunnelError(f"the tunnel muxer refused {store.device_name(udid)} ({r})")
     try:
         yield dict(os.environ, USBMUXD_SOCKET_ADDRESS=mux)
@@ -78,9 +81,6 @@ def session(udid, ip, mux=None):
 
 
 def run_devices(job, udids, argv, runner, is_local):
-    """Runs `argv --device <udid>` for each device through runner(job, argv, env) and returns the
-    first non-zero exit code. A device that isn't on USB or this Wi-Fi but answers on its WireGuard
-    IP is reached through the tunnel; every other device runs exactly as before."""
     rc = 0
     for udid in udids:
         if job.cancelled:
@@ -88,14 +88,19 @@ def run_devices(job, udids, argv, runner, is_local):
         cmd = [*argv, "--device", udid]
         ip = store.device_tunnel_ip(udid)
         result = None
-        if ip and not is_local(udid) and reachable(ip):
-            job.say(f"{store.device_name(udid)} is away from home; reaching it over WireGuard at {ip}")
-            log(f"reaching {store.device_name(udid)} over WireGuard at {ip}")
-            try:
-                with session(udid, ip) as env:
-                    result = runner(job, cmd, env)
-            except TunnelError as e:
-                job.say(f"✗ {e}")
+        if ip and not is_local(udid):
+            add_route()
+            if reachable(ip):
+                job.say(f"{store.device_name(udid)} is away from home; reaching it over WireGuard at {ip}")
+                log(f"reaching {store.device_name(udid)} over WireGuard at {ip}")
+                try:
+                    with session(udid, ip) as env:
+                        if not job.cancelled:
+                            result = runner(job, cmd, env)
+                except TunnelError as e:
+                    job.say(f"✗ {e}")
+        if job.cancelled:
+            break
         if result is None:
             result = runner(job, cmd, None)
         rc = rc or result

@@ -479,7 +479,7 @@ ${canPair && devs.length ? `
         <input class="fi" id="tun-${esc(d.udid)}" data-tunnel="${esc(d.udid)}" value="${esc(d.tunnel_ip)}" placeholder="WireGuard IP" autocomplete="off" autocapitalize="off" spellcheck="false">
         ${d.tunnel_ip ? `<button class="cap" data-copy="${esc(d.checkin)}">Copy Link</button>` : ""}</div>`).join("")}
     </div>
-    <div class="foot">Enter the IP each device has in your WireGuard server, like 10.8.0.2. While a signature is due and the device isn't on this network, it's reached there instead. It has to be on some Wi‑Fi network; mobile data alone won't work. Open its link from a Shortcuts automation to start a due refresh right away.${S.tunnel.route ? "" : " WG_SUBNET and WG_GATEWAY aren't set, so this machine needs its own route to the WireGuard subnet."}</div>
+    <div class="foot">Enter the IP each device has in WireGuard, like 10.8.0.2. While a signature is due and the device isn't on this network, it's reached there instead, as long as it's on some Wi‑Fi network. Open its link from a Shortcuts automation to start a due refresh right away; the link uses this page's address, which the device has to reach through WireGuard.${S.tunnel_route ? "" : " WG_SUBNET and WG_GATEWAY aren't set, so this machine needs its own route to the WireGuard subnet."}</div>
   </div>` : ""}
 
   <div class="sect">

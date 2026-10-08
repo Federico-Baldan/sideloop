@@ -32,7 +32,8 @@ class Watcher:
                 if device and udid != device:
                     continue
                 expiry = store.read_state(APPS / app_id / "state" / udid)["expiry"]
-                if not expiry or expiry - time.time() <= window:
+                # Same rule as refresh.sh: due once the whole days left are at most RENEW_BEFORE_DAYS.
+                if not expiry or expiry - time.time() < window + 86400:
                     return True
         return False
 
@@ -59,7 +60,6 @@ class Watcher:
         return "a refresh is due; starting it"
 
     def targets(self, timer, queued):
-        # A device with nothing due is skipped, so a device away from home is never contacted for nothing.
         return [u for u in (store.device_ids() if timer else queued) if self.due(u)]
 
     def loop(self):
@@ -82,9 +82,9 @@ class Watcher:
             with self.lock:
                 self.queue.clear()
             try:
-                remote.run_devices(job, self.targets(timer, queued), ["refresh.sh"],
-                                   lambda j, argv, env: run_capture(j, argv, RUN_TIMEOUT, env),
-                                   self.health.is_local)
+                job.rc = remote.run_devices(job, self.targets(timer, queued), ["refresh.sh"],
+                                            lambda j, argv, env: run_capture(j, argv, RUN_TIMEOUT, env),
+                                            self.health.is_local)
             finally:
                 job.ended = time.time()
                 if job.lines:

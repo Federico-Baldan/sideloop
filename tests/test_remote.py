@@ -2,6 +2,7 @@ import os
 import plistlib
 import socket
 import struct
+import subprocess
 import threading
 import unittest
 from unittest import mock
@@ -28,7 +29,7 @@ class FakeMux:
     """A usbmuxd-protocol server that records what it is sent and answers AddDevice like netmuxd."""
 
     def __init__(self, add_result=1):
-        self.messages, self.add_result, self.stopped = [], add_result, False
+        self.messages, self.add_result, self.stopped, self.garbage = [], add_result, False, False
         self.sock = socket.socket()
         self.sock.bind(("127.0.0.1", 0))
         self.sock.listen()
@@ -50,7 +51,7 @@ class FakeMux:
                 msg = plistlib.loads(_recv_exact(c, length - 16))
                 self.messages.append(msg)
                 if msg["MessageType"] == "AddDevice" and self.add_result is not None:
-                    body = plistlib.dumps({"Result": self.add_result})
+                    body = b"not a plist" if self.garbage else plistlib.dumps({"Result": self.add_result})
                     c.sendall(struct.pack("<IIII", 16 + len(body), 1, 8, tag) + body)
 
     def types(self):
@@ -72,7 +73,8 @@ class ValidIp(unittest.TestCase):
             self.assertEqual(remote.valid_ip(blank), "")
 
     def test_valid_ip_rejects_garbage(self):
-        for bad in ("10.8.0", "phone.lan", "10.8.0.2:62078", "10.8.0.2\nAPPLE_ID=x", "10.8.0.0/24"):
+        for bad in ("10.8.0", "phone.lan", "10.8.0.2:62078", "10.8.0.2\nAPPLE_ID=x", "10.8.0.0/24",
+                    "fe80::1%eth0", "fe80::1%$(touch pwned)\nAPPLE_ID=evil"):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 remote.valid_ip(bad)
 
@@ -115,6 +117,12 @@ class Session(unittest.TestCase):
         self.mux.add_result = None
         with self.assertRaises(remote.TunnelError), remote.session(PHONE, "10.8.0.2", self.mux.addr):
             self.fail("the block must not run")
+
+    def test_malformed_reply_raises_tunnel_error(self):
+        self.mux.garbage = True
+        with self.assertRaises(remote.TunnelError), remote.session(PHONE, "10.8.0.2", self.mux.addr):
+            self.fail("the block must not run")
+        self.assertEqual(self.mux.types()[-1], "AddDevice")
 
     def test_muxer_down_raises_tunnel_error(self):
         self.mux.close()
@@ -179,6 +187,28 @@ class RunDevices(unittest.TestCase):
         rc, _ = self.run_devices([PHONE, OTHER, THIRD], local=True)
         self.assertEqual(rc, 3)
         self.assertEqual(len(self.calls), 3)
+
+    def test_cancel_during_probe_skips_the_run(self):
+        def probe(ip):
+            self.job.cancelled = True
+            return True
+        with mock.patch.object(remote, "reachable", side_effect=probe):
+            remote.run_devices(self.job, [PHONE], ["refresh.sh"], self.runner, lambda u: False)
+        self.assertEqual(self.calls, [])
+
+    def test_route_is_reapplied_before_reaching_a_device(self):
+        real_run, routes = subprocess.run, []
+
+        def run(argv, *args, **kwargs):
+            if argv[0] != "ip":
+                return real_run(argv, *args, **kwargs)
+            routes.append(argv)
+            return mock.Mock(returncode=0)
+        with mock.patch.object(remote, "WG_SUBNET", "10.8.0.0/24"), mock.patch.object(remote, "WG_GATEWAY", "172.20.0.100"), \
+                mock.patch.object(subprocess, "run", side_effect=run):
+            self.run_devices([PHONE])
+            self.run_devices([PHONE], local=True)
+        self.assertEqual(routes, [["ip", "route", "replace", "10.8.0.0/24", "via", "172.20.0.100"]])
 
     def test_cancel_stops_loop(self):
         def cancelling(job, argv, env):

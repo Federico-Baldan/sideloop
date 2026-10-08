@@ -37,7 +37,7 @@ class App:
             "registered": [{"udid": u, "name": store.device_name(u), "live": live.get(u.lower()),
                             "tunnel_ip": store.device_tunnel_ip(u), "checkin": auth.checkin_token(u)}
                            for u in store.device_ids()],
-            "tunnel": {"available": bool(self.muxers), "route": f"{WG_SUBNET} via {WG_GATEWAY}" if WG_SUBNET and WG_GATEWAY else ""},
+            "tunnel_route": bool(WG_SUBNET and WG_GATEWAY),
             "devices": h["devices"],
             "scanning": h["scanning"],
             "services": {"anisette": h["anisette"], "muxer": h["muxer"]},
@@ -151,7 +151,6 @@ class App:
         return args, udids, what
 
     def _run_devices(self, job, udids, argv, runner):
-        # One run per device, so a device away from home can be reached over WireGuard on its own.
         if not udids:
             job.say("nothing to do: no app is assigned to a device")
             return
@@ -165,8 +164,8 @@ class App:
             args, title = args + ["--force"], f"Signing {what}"
         else:
             title = "Checking if a refresh is due"
-        argv, runner = ["refresh.sh", *args], lambda j, a, env: run_pty(j, a, env)
-        return {"job": self.jobs.start("refresh", title, lambda j: self._run_devices(j, udids, argv, runner)).id}
+        argv = ["refresh.sh", *args]
+        return {"job": self.jobs.start("refresh", title, lambda j: self._run_devices(j, udids, argv, run_pty)).id}
 
     def recheck(self, data):
         args, udids, what = self._target(data)
