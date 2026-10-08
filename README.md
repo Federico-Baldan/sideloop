@@ -81,7 +81,7 @@ Data is stored in `./data`.
 
 ## Away from home
 
-Sideloop can reach a device through a WireGuard server you already run, such as [wg-easy](https://github.com/wg-easy/wg-easy). Bonjour doesn't cross a VPN, so each device gets the IP it has in WireGuard. Linux only.
+Sideloop can reach a device through a WireGuard server you already run, such as [wg-easy](https://github.com/wg-easy/wg-easy). Bonjour doesn't cross a VPN, so each device gets the IP it has in WireGuard. The device has to be on a Wi-Fi network: over mobile data alone it can't be refreshed. Linux only.
 
 1. Create a WireGuard client for the device and import it in the WireGuard app. Note its IP, like `10.8.0.2`.
 2. Route the WireGuard subnet. If wg-easy runs in Docker, give it a fixed `ipv4_address` on its network and set these on the `app` service:
@@ -106,7 +106,7 @@ Sideloop can reach a device through a WireGuard server you already run, such as 
 Notes
 
 - iOS only answers while the device is on **some Wi-Fi network**, such as a hotel, an office or another phone's hotspot. On mobile data alone, refreshing doesn't work.
-- With Persistent Keepalive off, the NAT of most networks drops the tunnel's return path soon after the device goes quiet, so sideloop can usually reach it only right after it sent something. The check-in in step 6 does that, so it starts most refreshes. A keepalive of 25 seconds keeps the device reachable, at some battery cost.
+- With Persistent Keepalive off, the NAT of most networks drops the tunnel's return path soon after the device goes quiet, so sideloop can usually reach it only right after it sent something. The check-in Shortcut from step 6 does that, which makes it the most reliable way to start a refresh while you're away, so trigger the Shortcut from an app you open every day. A keepalive of 25 seconds keeps the device reachable, at some battery cost.
 - Battery: nothing stays connected. Sideloop only contacts the device while a signature is due, on a check-in or with one short connection attempt every 30 minutes, until the refresh succeeds.
 - Each link is tied to one device and stops working if `data/ui.json` is deleted.
 
