@@ -13,6 +13,7 @@ A small self-hosted service with a web UI for any Linux machine (amd64 or arm64)
 
 - [x] Multiple apps on multiple iPhones and iPads
 - [x] Automatic re-signing when a device comes online, before the signature expires
+- [x] Re-signing away from home through your own WireGuard server, without draining the battery
 - [x] Web UI for pairing, uploading IPAs, 2FA codes and live progress
 - [x] Checks each IPA for FairPlay encryption, tweaks and app extensions
 - [x] Self-hosted Apple sign-in via [anisette-v3-server](https://github.com/Dadoum/anisette-v3-server)
@@ -71,12 +72,37 @@ Pair the device in Finder and enable **Show this iPhone when on Wi-Fi**.
 
 - Use the Apple ID's **regular password**. App-specific passwords don't work.
 - Apple asks for a **2FA code** on the first sign-in. After that, sign-ins are silent.
-- The device must be **unlocked and on the same Wi-Fi** while a re-sign runs.
+- The device must be **unlocked and on the same Wi-Fi** while a re-sign runs, or reachable over [WireGuard](#away-from-home).
 - A free account allows 3 apps per device and 10 App IDs per week. Each app extension needs its own App ID.
 - Trust the developer once in **Settings > General > VPN & Device Management**. Refreshes keep it trusted.
 - If Apple sign-in stops working, update `ALTSERVER_TAG` in the `Dockerfile`. AltServer is built from that tag with the patches in `altserver/`.
 
 Data is stored in `./data`.
+
+## Away from home
+
+Sideloop can reach a device through a WireGuard server you already run, such as [wg-easy](https://github.com/wg-easy/wg-easy). Bonjour doesn't cross a VPN, so each device gets the IP it has in WireGuard. Linux only.
+
+1. Create a WireGuard client for the device and import it in the WireGuard app. Note its IP, like `10.8.0.2`.
+2. Route the WireGuard subnet. If wg-easy runs in Docker, give it a fixed `ipv4_address` and set these on the `app` service:
+
+   ```yaml
+   environment:
+     WG_SUBNET: 10.8.0.0/24      # wg-easy's IPv4 CIDR
+     WG_GATEWAY: 172.20.0.100    # wg-easy's IP on its Docker network
+   ```
+
+   Sideloop then runs `ip route replace 10.8.0.0/24 via 172.20.0.100` on start. If WireGuard runs on the host or your router, leave them out and route the subnet there.
+3. In **Settings > Away From Home**, enter the device's WireGuard IP.
+4. In the WireGuard app, edit the tunnel and turn on **On-Demand** for Wi-Fi except your home network, so it only runs when you're out. Leave **Persistent Keepalive** off.
+5. Optional: in Shortcuts, add an automation (for example **Wi-Fi > Any Network**, or **App > Is Opened** for an app you use daily) set to **Run Immediately**, with **Get Contents of URL** and the device's link from **Copy Link**. A due refresh then starts right away instead of at the next check.
+
+Notes
+
+- iOS only answers while the device is on **some Wi-Fi network**: a hotel, an office or another phone's hotspot. The network doesn't need internet. On mobile data alone, refreshing doesn't work.
+- Battery: sideloop only contacts the device while a signature is due, with one short connection attempt every 30 minutes until the refresh succeeds. Nothing stays connected.
+- The device answers from its WireGuard IP to this machine's address on the wg-easy network (`172.20.0.1` above). wg-easy's default Allowed IPs `0.0.0.0/0` include it; with a split tunnel add that subnet, and the network of the address in the link.
+- Each link is tied to one device and stops working if `data/ui.json` is deleted.
 
 ## Author
 

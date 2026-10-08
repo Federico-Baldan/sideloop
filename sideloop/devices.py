@@ -8,18 +8,22 @@ import urllib.request
 from pathlib import Path
 
 from . import store
-from .config import ANISETTE, LOCKDOWN_DIR, USB_MUX
+from .config import ANISETTE, LOCKDOWN_DIR, TUNNEL_MUX, USB_MUX
 from .log import log
 
 SCAN_INTERVAL = 60
 
 
 class Muxers:
-    NAMES = ("usbmuxd", "netmuxd")
+    NAMES = ("usbmuxd", "netmuxd", "tunnelmuxd")
     CMDS = {
         "usbmuxd": ["usbmuxd", "-f"],
         "netmuxd": ["netmuxd", "--host", "127.0.0.1", "-p", "27015", "--disable-unix",
                     "--upstream-usbmuxd", USB_MUX, "--plist-storage", LOCKDOWN_DIR],
+        # Holds a device away from home for one run at a time (see remote.py). Without heartbeat it
+        # doesn't keep a connection to the phone open, which would keep its radio awake.
+        "tunnelmuxd": ["netmuxd", "--host", "127.0.0.1", "-p", TUNNEL_MUX.rsplit(":", 1)[1], "--disable-unix",
+                       "--disable-mdns", "--disable-usb", "--disable-heartbeat", "--plist-storage", LOCKDOWN_DIR],
     }
 
     def __init__(self):
@@ -135,6 +139,10 @@ class Health:
         while True:
             self.scan()
             time.sleep(SCAN_INTERVAL)
+
+    def is_local(self, udid):
+        with self.lock:
+            return udid in self.here
 
     def visible(self, udid):
         with self.lock:
