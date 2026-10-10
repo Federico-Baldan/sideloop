@@ -2,16 +2,18 @@ import ipaddress
 import os
 import socket
 import subprocess
-from contextlib import contextmanager
+import time
+from contextlib import ExitStack, contextmanager
 
 from . import store
-from .config import TUNNEL_MUX, WG_GATEWAY, WG_SUBNET
+from .config import LOCKDOWN_DIR, TUNNEL_MUX, WG_GATEWAY, WG_SUBNET
 from .lockdown import LOCKDOWN_PORT, mux_connect, mux_request, mux_send
 from .log import log
 
 # Bonjour doesn't cross a VPN, so a device away from home is handed to a second netmuxd by its
 # WireGuard IP for the length of one run.
 PROBE_TIMEOUT = 3
+MUXER_START_TIMEOUT = 10
 SERVICE_NAME = "_apple-mobdev2._tcp.local"
 
 
@@ -61,23 +63,59 @@ def _remove(udid, mux):
         pass
 
 
+def tunnel_cmd(port):
+    # With heartbeat: over the network iOS closes every service right after its TLS handshake
+    # unless the host holds a heartbeat session with the device.
+    return ["netmuxd", "--host", "127.0.0.1", "-p", port, "--disable-unix", "--disable-mdns",
+            "--disable-usb", "--plist-storage", LOCKDOWN_DIR]
+
+
+@contextmanager
+def tunnel_muxer():
+    # netmuxd only drops a heartbeat when it exits, so each run gets its own and stops it afterwards;
+    # between runs nothing keeps the phone's radio awake.
+    host, port = TUNNEL_MUX.rsplit(":", 1)
+    if reachable(host, int(port)):
+        raise TunnelError(f"something else is listening on {TUNNEL_MUX}")
+    try:
+        p = subprocess.Popen(tunnel_cmd(port), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        raise TunnelError(f"couldn't start the tunnel muxer ({e})") from None
+    try:
+        deadline = time.time() + MUXER_START_TIMEOUT
+        while not reachable(host, int(port)):
+            if p.poll() is not None or time.time() > deadline:
+                raise TunnelError("the tunnel muxer didn't start")
+            time.sleep(0.1)
+        yield TUNNEL_MUX
+    finally:
+        p.terminate()
+        try:
+            p.wait(5)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+
+
 @contextmanager
 def session(udid, ip, mux=None):
-    mux = mux or TUNNEL_MUX
-    _remove(udid, mux)
-    try:
-        with mux_connect(mux) as s:
-            r = mux_request(s, {"MessageType": "AddDevice", "ConnectionType": "Network",
-                                "ServiceName": SERVICE_NAME, "IPAddress": ip, "DeviceID": udid})
-        ok = r.get("Result") == 1
-    except Exception as e:
-        raise TunnelError(f"the tunnel muxer didn't take {store.device_name(udid)} ({e}); is it paired?") from None
-    if not ok:
-        raise TunnelError(f"the tunnel muxer refused {store.device_name(udid)} ({r})")
-    try:
-        yield dict(os.environ, USBMUXD_SOCKET_ADDRESS=mux)
-    finally:
+    with ExitStack() as stack:
+        mux = mux or stack.enter_context(tunnel_muxer())
         _remove(udid, mux)
+        try:
+            with mux_connect(mux) as s:
+                r = mux_request(s, {"MessageType": "AddDevice", "ConnectionType": "Network",
+                                    "ServiceName": SERVICE_NAME, "IPAddress": ip, "DeviceID": udid})
+            ok = r.get("Result") == 1
+        except Exception as e:
+            raise TunnelError(f"the tunnel muxer didn't take {store.device_name(udid)} ({e}); is it paired?") from None
+        if not ok:
+            raise TunnelError(f"the tunnel muxer refused {store.device_name(udid)} ({r}); "
+                              "it couldn't start a heartbeat with the device")
+        try:
+            yield dict(os.environ, USBMUXD_SOCKET_ADDRESS=mux)
+        finally:
+            _remove(udid, mux)
 
 
 def run_devices(job, udids, argv, runner, is_local):

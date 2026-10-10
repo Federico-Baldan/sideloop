@@ -3,8 +3,10 @@ import plistlib
 import socket
 import struct
 import subprocess
+import sys
 import threading
 import unittest
+from contextlib import nullcontext
 from unittest import mock
 
 from tests import FakeJob, reset_data
@@ -130,6 +132,63 @@ class Session(unittest.TestCase):
             self.fail("the block must not run")
 
 
+LISTENER = "import socket, sys, time; s = socket.socket(); s.bind(('127.0.0.1', int(sys.argv[1]))); s.listen(); time.sleep(60)"
+
+
+class TunnelMuxer(unittest.TestCase):
+    def setUp(self):
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            self.port = s.getsockname()[1]
+        self.started, real_popen = [], subprocess.Popen
+
+        def popen(*args, **kwargs):
+            self.started.append(real_popen(*args, **kwargs))
+            return self.started[-1]
+        for patcher in (mock.patch.object(remote, "TUNNEL_MUX", f"127.0.0.1:{self.port}"),
+                        mock.patch.object(subprocess, "Popen", side_effect=popen)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def use(self, code):
+        return mock.patch.object(remote, "tunnel_cmd", lambda port: [sys.executable, "-c", code, port])
+
+    def test_tunnel_muxer_keeps_the_heartbeat(self):
+        cmd = remote.tunnel_cmd("27016")
+        self.assertNotIn("--disable-heartbeat", cmd)
+        self.assertIn("--disable-mdns", cmd)
+        self.assertIn("--disable-usb", cmd)
+
+    def test_muxer_runs_only_for_the_session(self):
+        with self.use(LISTENER), remote.tunnel_muxer() as mux:
+            self.assertEqual(mux, f"127.0.0.1:{self.port}")
+            self.assertTrue(remote.reachable("127.0.0.1", self.port))
+            self.assertIsNone(self.started[0].poll())
+        self.assertIsNotNone(self.started[0].returncode)
+
+    def test_muxer_stops_when_the_run_fails(self):
+        with self.assertRaises(KeyError), self.use(LISTENER), remote.tunnel_muxer():
+            raise KeyError
+        self.assertIsNotNone(self.started[0].returncode)
+
+    def test_muxer_that_never_listens_raises_tunnel_error(self):
+        with self.assertRaises(remote.TunnelError), self.use("pass"), remote.tunnel_muxer():
+            self.fail("the block must not run")
+
+    def test_port_in_use_raises_tunnel_error(self):
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", self.port))
+            s.listen()
+            with self.assertRaises(remote.TunnelError), self.use(LISTENER), remote.tunnel_muxer():
+                self.fail("the block must not run")
+        self.assertEqual(self.started, [])
+
+    def test_missing_netmuxd_raises_tunnel_error(self):
+        with mock.patch.object(remote, "tunnel_cmd", lambda port: ["/nonexistent/netmuxd"]), \
+                self.assertRaises(remote.TunnelError), remote.tunnel_muxer():
+            self.fail("the block must not run")
+
+
 class RunDevices(unittest.TestCase):
     def setUp(self):
         reset_data()
@@ -138,7 +197,7 @@ class RunDevices(unittest.TestCase):
         store.set_device_tunnel_ip(PHONE, "10.8.0.2")
         self.mux = FakeMux()
         self.addCleanup(self.mux.close)
-        patcher = mock.patch.object(remote, "TUNNEL_MUX", self.mux.addr)
+        patcher = mock.patch.object(remote, "tunnel_muxer", lambda: nullcontext(self.mux.addr))
         patcher.start()
         self.addCleanup(patcher.stop)
         self.job, self.calls, self.codes = FakeJob(), [], []
